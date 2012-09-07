@@ -1,0 +1,220 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>com.btoddb</groupId>
+	<artifactId>trellis-parent</artifactId>
+	<packaging>pom</packaging>
+	<version>0.1.5-SNAPSHOT</version>
+
+	<name>trellis-parent</name>
+	<description>Grid software utilizing Apache Cassandra</description>
+
+	<modules>
+		<module>trellis-actor</module>
+		<module>trellis-client</module>
+		<module>trellis-common</module>
+		<module>trellis-server</module>
+		<module>trellis-actor-example</module>
+	</modules>
+
+	<developers>
+		<developer>
+			<name>B. Todd Burruss</name>
+			<email>btoddb@gmail.com</email>
+		</developer>
+	</developers>
+
+	<properties>
+		<username>${env.USER}</username>
+
+		<spring.version>3.0.6.RELEASE</spring.version>
+		<spring-security.version>3.0.6.RELEASE</spring-security.version>
+		<cassandra.version>1.1.4-notify-SNAPSHOT</cassandra.version>
+
+		<project.build.sourceEncoding>
+			UTF-8
+		</project.build.sourceEncoding>
+		<project.reporting.outputEncoding>
+			UTF-8
+		</project.reporting.outputEncoding>
+	</properties>
+
+	<repositories>
+		<repository>
+			<id>sourceforge</id>
+			<url>http://oss.sonatype.org/content/groups/sourceforge/</url>
+			<releases>
+				<enabled>true</enabled>
+			</releases>
+			<snapshots>
+				<enabled>true</enabled>
+			</snapshots>
+		</repository>
+		<!-- <repository> -->
+		<!-- <id>com.springsource.repository.maven.release</id> -->
+		<!-- <url>http://maven.springframework.org/release/</url> -->
+		<!-- <snapshots> -->
+		<!-- <enabled>false</enabled> -->
+		<!-- </snapshots> -->
+		<!-- </repository> -->
+	</repositories>
+
+	<distributionManagement>
+		<repository>
+			<id>btoddb-releases</id>
+			<name>BToddB Releases</name>
+			<url>http://localhost:8082/artifactory/btoddb-maven</url>
+		</repository>
+		<snapshotRepository>
+			<id>btoddb-snapshots</id>
+			<name>BToddB Snapshots</name>
+			<url>http://localhost:8082/artifactory/btoddb-maven</url>
+		</snapshotRepository>
+	</distributionManagement>
+
+	<build>
+		<pluginManagement>
+			<plugins>
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-surefire-plugin</artifactId>
+					<configuration>
+						<forkMode>always</forkMode>
+						<argLine>-Xmx512M -Xms512M -Dfile.encoding=UTF-8
+							-Dsun.jnu.encoding=UTF-8</argLine>
+					</configuration>
+				</plugin>
+			</plugins>
+		</pluginManagement>
+
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-scm-plugin</artifactId>
+				<version>1.5</version>
+				<configuration>
+					<connectionType>connection</connectionType>
+					<includes>**</includes>
+				</configuration>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-release-plugin</artifactId>
+				<configuration>
+					<preparationGoals>install</preparationGoals>
+					<arguments>-DskipTests</arguments>
+					<!-- <autoVersionSubmodules>true</autoVersionSubmodules> -->
+				</configuration>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<configuration>
+					<source>1.6</source>
+					<target>1.6</target>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+
+	<!-- <profiles> -->
+	<!-- <profile> -->
+	<!-- -->
+	<!-- Define a release profile for fork'ing compiler with increased memory 
+		settings. -->
+	<!-- Attempt to avoid a java.lang.OutOfMemoryError during javac. -->
+	<!-- -->
+	<!-- <id>release</id> -->
+	<!-- <build> -->
+	<!-- <plugins> -->
+	<!-- <plugin> -->
+	<!-- <artifactId>maven-compiler-plugin</artifactId> -->
+	<!-- <configuration> -->
+	<!-- <source>1.6</source> -->
+	<!-- <target>1.6</target> -->
+	<!-- <fork>true</fork> -->
+	<!-- <maxmem>1024m</maxmem> -->
+	<!-- <meminitial>512m</meminitial> -->
+	<!-- </configuration> -->
+	<!-- </plugin> -->
+	<!-- </plugins> -->
+	<!-- </build> -->
+	<!-- </profile> -->
+	<!-- </profiles> -->
+
+	<!-- <reporting> <plugins> <plugin> <artifactId>maven-javadoc-plugin</artifactId> 
+		<configuration> <maxmemory>512m</maxmemory> </configuration> </plugin> <plugin> 
+		<artifactId>maven-surefire-report-plugin</artifactId> </plugin> </plugins> 
+		</reporting> -->
+
+	<dependencies>
+		<dependency>
+			<groupId>com.google.protobuf</groupId>
+			<artifactId>protobuf-java</artifactId>
+			<version>2.3.0</version>
+			<type>jar</type>
+			<scope>compile</scope>
+		</dependency>
+		<dependency>
+			<groupId>joda-time</groupId>
+			<artifactId>joda-time</artifactId>
+			<version>2.0</version>
+		</dependency>
+		<dependency>
+			<groupId>org.jboss.netty</groupId>
+			<artifactId>netty</artifactId>
+			<version>3.2.7.Final</version>
+		</dependency>
+		<dependency>
+			<groupId>commons-io</groupId>
+			<artifactId>commons-io</artifactId>
+			<version>2.0.1</version>
+			<type>jar</type>
+			<scope>compile</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-api</artifactId>
+			<version>1.6.1</version>
+		</dependency>
+		<dependency>
+			<groupId>com.google.guava</groupId>
+			<artifactId>guava</artifactId>
+			<version>r08</version>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework</groupId>
+			<artifactId>spring-core</artifactId>
+			<version>${spring.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework</groupId>
+			<artifactId>spring-beans</artifactId>
+			<version>${spring.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework</groupId>
+			<artifactId>spring-context</artifactId>
+			<version>${spring.version}</version>
+		</dependency>
+
+        <!-- testing -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.6</version>
+            <scope>test</scope>
+        </dependency>
+        
+		<dependency>
+			<groupId>org.springframework</groupId>
+			<artifactId>spring-test</artifactId>
+			<version>${spring.version}</version>
+			<scope>test</scope>
+		</dependency>
+
+	</dependencies>
+</project>

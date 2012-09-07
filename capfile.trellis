@@ -1,0 +1,72 @@
+#puts "hostList = #{hostList}"
+#puts "cassBinHome = #{cassBinHome}"
+
+set :env, "#{env}"
+set :trellis_home, "/opt/trellis"
+set :cass_data_home, "/data/cassandra"
+set :cass_caches_home, "/opt/trellis/cassandra/saved_caches"
+set :cass_commitlog_home, "/commitlog/cassandra"
+set :cass_log_home, "/var/log/cassandra"
+set :remote_drop_dir, "~/drop_spot_trellis"
+set :hosts, eval(hostList)
+
+#
+# cassandra stop/start/etc commands
+#
+
+role (:cass_servers) { hosts }
+
+task :ps do
+  run "ps -ef | grep cass | grep -v grep"
+end
+
+task :clean do
+  run "rm -fr #{cass_data_home}/* #{cass_commitlog_home}/* #{cass_log_home}/*"
+end
+
+task :clear_cache_files do
+  run "rm -fr #{cass_data_home}/saved_caches/*"
+end
+
+task :compact do
+  run "#{trellis_home}/cassandra/bin/nodetool --host localhost --port 7199 compact"
+end
+
+task :clear_cass_log do
+  run "echo "" > /var/log/cassandra/system.log"
+end
+
+task :start do
+  run "#{trellis_home}/bin/start.sh"
+end
+
+task :stop do
+  run "#{trellis_home}/bin/stop.sh"
+end
+
+task :restart do
+  stop_now
+  start
+end
+
+
+#
+# targets for deployments
+#
+
+#task :prepare_server do
+#  run ("mkdir -p #{trellis_home}/cassandra-conf #{trellis_home}/cassandra-bin #{cass_log_home} #{cass_data_home}/data #{cass_commitlog_home} #{cass_data_home}/saved_caches 2> /dev/null")
+#end
+
+task :rsync_to_others do
+#  prepare_server
+  run "rsync --progress --times --recursive --dirs --links --compress --delete --rsh=\"ssh -o StrictHostKeyChecking=no\" #{dropHost}:#{remote_drop_dir}/ #{trellis_home}"
+end
+
+task :deploy_config do
+#  run "rm -fr #{trellis_home}/cassandra/conf"
+#  prepare_server
+
+  upload "/Users/bburruss/workspace/cassandra-extensions/src/main/cfg/#{env}/output/$CAPISTRANO:HOST$/.", "#{trellis_home}/cassandra/conf", :via=> :scp, :recursive => true
+end
+

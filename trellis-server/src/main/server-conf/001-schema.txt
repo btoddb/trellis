@@ -1,0 +1,29 @@
+
+drop keyspace Grid;
+create keyspace Grid with
+   strategy_options = {DC1:3}
+;
+
+use Grid;
+
+create column family TypeDefs with
+   and comparator = IntegerType
+   and gc_grace = 86400
+;
+
+create column family ActorDefs with
+   and comparator = UTF8Type
+   and gc_grace = 86400
+;
+
+create column family SerClassDefsById with
+   and comparator = UTF8Type
+   and gc_grace = 86400
+;
+
+create column family SerClassDefsByType with
+   and comparator = UTF8Type
+   and gc_grace = 86400
+;
+
+quit;

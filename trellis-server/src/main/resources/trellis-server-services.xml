@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:context="http://www.springframework.org/schema/context"
+	xmlns:util="http://www.springframework.org/schema/util"
+
+	xsi:schemaLocation="
+		http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-3.0.xsd
+		http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context-3.0.xsd
+		http://www.springframework.org/schema/util http://www.springframework.org/schema/util/spring-util-3.0.xsd
+		"> <!-- beans -->
+
+	<import resource="/trellis-client-services.xml" />
+
+	<!-- scan for @Components (ie @service, @repository, etc) -->
+	<context:component-scan base-package="com.btoddb.trellis" />
+
+	<bean id="nioServer" class="com.btoddb.trellis.server.netty.NettyServer">
+		<property name="objEncoder" ref="trellisObjectEncoder" />
+		<property name="objDecoder" ref="trellisObjectDecoder" />
+		<property name="receiveQueue" ref="receiveRequestQueue" />
+		<property name="sessIdGen" ref="gridSessionIdGenerator" />
+		<property name="jmxBean" ref="serverMessagingStatsJmxBean" />
+	</bean>
+
+	<bean id="getNodesActor" class="com.btoddb.trellis.server.GetNodesGridActor">
+		<property name="nodeDiscovery" ref="nodeDiscoveryService" />
+		<property name="serSrvc" ref="serSrvc" />
+	</bean>
+
+    <bean id="storageMgr" class="com.btoddb.trellis.server.persistence.StorageManager">
+        <property name="cacheProvider" ref="trellisCache" />
+    </bean>
+
+	<bean id="receiveRequestQueue" class="com.btoddb.trellis.utils.ArrayBlockingQueueWithStats">
+		<constructor-arg index="0" value="receive-request:work-queue" />
+		<constructor-arg index="1" value="100" />
+		<constructor-arg index="2" value="false" />
+	</bean>
+
+	<bean id="dispatchQueue" class="com.btoddb.trellis.utils.ArrayBlockingQueueWithStats">
+		<constructor-arg index="0" value="dispatch-request:work-queue" />
+		<constructor-arg index="1" value="100" />
+		<constructor-arg index="2" value="false" />
+	</bean>
+
+	<bean id="sessionFinalizerQueue" class="com.btoddb.trellis.utils.ArrayBlockingQueueWithStats">
+		<constructor-arg index="0" value="session-finalizer:work-queue" />
+		<constructor-arg index="1" value="100" />
+		<constructor-arg index="2" value="false" />
+	</bean>
+
+	<bean id="responseQueue" class="com.btoddb.trellis.utils.ArrayBlockingQueueWithStats">
+		<constructor-arg index="0" value="send-response:work-queue" />
+		<constructor-arg index="1" value="100" />
+		<constructor-arg index="2" value="false" />
+	</bean>
+
+	<bean id="parentStage" class="com.btoddb.trellis.server.stage.StageController"
+		abstract="true">
+		<!-- <property name="responseQueue" ref="responseQueue" /> -->
+		<property name="msgStatsMBean" ref="serverMessagingStatsJmxBean" />
+	</bean>
+
+	<bean id="receiveRequestStage" class="com.btoddb.trellis.server.stage.ReceiveRequestStage"
+		parent="parentStage">
+		<property name="stageName" value="receive-request" />
+		<property name="inQueue" ref="receiveRequestQueue" />
+		<property name="outQueue" ref="dispatchQueue" />
+		<property name="numThreads" value="4" />
+
+		<property name="gridCluster" ref="gridCluster" />
+		<property name="nodeMgmt" ref="cassandraApi" />
+		<property name="sessIdGen" ref="gridSessionIdGenerator" />
+	</bean>
+
+	<bean id="dispatchRequestStage" class="com.btoddb.trellis.server.stage.DispatchRequestStage"
+		parent="parentStage">
+		<property name="actorMgr" ref="actorMgr" />
+		<property name="stageName" value="dispatch-request" />
+		<property name="inQueue" ref="dispatchQueue" />
+		<property name="outQueue" ref="sessionFinalizerQueue" />
+		<property name="msgStatsMBean" ref="serverActorStatsJmxBean" />
+		<property name="numThreads" value="32" />     
+        <property name="storageMgr" ref="storageMgr" />
+	</bean>
+
+	<bean id="finalizeSessionStage" class="com.btoddb.trellis.server.stage.FinalizeSessionStage"
+		parent="parentStage">
+		<property name="stageName" value="session-finalizer" />
+		<property name="inQueue" ref="sessionFinalizerQueue" />
+		<property name="outQueue" ref="responseQueue" />
+		<property name="numThreads" value="4" /> <!-- processing time is so fast, more threads cause longer queue wait -->
+	</bean>
+
+	<bean id="sendResponseStage" class="com.btoddb.trellis.server.stage.SendResponseStage"
+		parent="parentStage">
+		<property name="stageName" value="send-response" />
+		<property name="inQueue" ref="responseQueue" />
+		<property name="numThreads" value="4" />
+	</bean>
+
+	<bean id="nodeDiscoveryService" class="com.btoddb.trellis.server.NodeDiscoveryLocalService">
+		<property name="nodeMgmt" ref="cassandraApi" />
+	</bean>
+
+	<!-- JMX setup -->
+	<bean id="jmxServerMBeanServer" class="org.springframework.jmx.support.MBeanServerFactoryBean">
+		<property name="locateExistingServerIfPossible" value="true" />
+	</bean>
+	<bean id="jmxServerExporter" class="org.springframework.jmx.export.MBeanExporter"
+		lazy-init="false">
+		<property name="beans">
+			<map>
+				<entry key="trellis-server:name=messaging-stats" value-ref="serverMessagingStatsJmxBean" />
+				<entry
+					key="trellis-server:type=stages,stage=receive-request,name=stage-stats"
+					value-ref="receiveRequestStage" />
+				<entry
+					key="trellis-server:type=stages,stage=dispatch-request,name=actor-stats"
+					value-ref="serverActorStatsJmxBean" />
+				<entry
+					key="trellis-server:type=stages,stage=dispatch-request,name=stage-stats"
+					value-ref="dispatchRequestStage" />
+				<entry
+					key="trellis-server:type=stages,stage=session-finalizer,name=stage-stats"
+					value-ref="finalizeSessionStage" />
+				<entry
+					key="trellis-server:type=stages,stage=send-response,name=stage-stats"
+					value-ref="sendResponseStage" />
+			</map>
+		</property>
+		<property name="assembler" ref="jmxServerAssembler" />
+		<property name="namingStrategy" ref="jmxServerNamingStrategy" />
+		<!-- <property name="autodetect" value="true" /> -->
+		<property name="server" ref="jmxServerMBeanServer" />
+	</bean>
+
+	<bean id="jmxServerAttributeSource"
+		class="org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource" />
+
+	<!-- will create management interface using annotation metadata -->
+	<bean id="jmxServerAssembler"
+		class="org.springframework.jmx.export.assembler.MetadataMBeanInfoAssembler">
+		<property name="attributeSource" ref="jmxServerAttributeSource" />
+	</bean>
+
+	<!-- will pick up the ObjectName from the annotation -->
+	<bean id="jmxServerNamingStrategy"
+		class="org.springframework.jmx.export.naming.MetadataNamingStrategy">
+		<property name="attributeSource" ref="jmxServerAttributeSource" />
+	</bean>
+
+	<bean id="serverMessagingStatsJmxBean" class="com.btoddb.trellis.common.TrellisStatsJmxBean" />
+	<bean id="serverActorStatsJmxBean" class="com.btoddb.trellis.common.TrellisStatsJmxBean" />
+
+	<bean id="trellisCache" class="com.btoddb.trellis.caching.TrellisCache">
+		<!-- <property name="confFile" value="/opt/cassandra/cassandra-conf/ehcache.xml" 
+			/> -->
+		<property name="mBeanServer" ref="jmxServerMBeanServer" />
+	</bean>
+
+	<bean id="cassMutListener" class="com.btoddb.trellis.caching.CassandraMutationListener">
+		<property name="cacheProvider" ref="trellisCache" />
+		<property name="actorLoader" ref="actorServiceLoader" />
+		<property name="mBeanServer" ref="jmxServerMBeanServer" />
+	</bean>
+
+	<!-- property files -->
+	<bean id="gridProps"
+		class="org.springframework.beans.factory.config.PropertyPlaceholderConfigurer">
+		<property name="placeholderPrefix" value="$gridProps{" />
+		<property name="locations">
+			<list>
+				<value>trellis-server.properties</value>
+			</list>
+		</property>
+		<property name="properties">
+			<props>
+				<prop key="hosts">localhost</prop>
+				<prop key="start-node-discovery">true</prop>
+				<prop key="server-mode">true</prop>
+			</props>
+		</property>
+	</bean>
+
+
+</beans>
+

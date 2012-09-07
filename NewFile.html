@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Insert title here</title>
+<style>
+  .type-def table, td, th {
+    background-color: PaleGoldenRod;
+    padding: 3px;
+    border-collapse: collapse;
+    border: 1px dotted green;
+  }
+</style>
+</head>
+<body>
+
+<div class="type-def">
+<table>
+<tbody>
+<tr><th>Field</th><th>Type</th><th>Length</th><th>Description</th></tr>
+<tr><td>key</td><td>ByteBuffer</td><td>48 bytes + key</td><td>See ByteBuffer description below</td></tr>
+<tr><td>token</td><td>BigIntegerToken</td><td>88 bytes</td><td>Backed by a BigInteger, size varies based on its value</td></tr>
+</tbody></table>
+</div>
+
+
+
+</body>
+</html>

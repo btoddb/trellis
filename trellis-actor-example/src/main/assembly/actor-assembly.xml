@@ -1,0 +1,35 @@
+<assembly>
+	<id>actor-providers</id>
+	<formats>
+		<format>jar</format>
+	</formats>
+
+	<includeBaseDirectory>false</includeBaseDirectory>
+
+	<dependencySets>
+		<dependencySet>
+			<scope>runtime</scope>
+			
+			<excludes>
+				<exclude>com.btoddb:trellis-actor</exclude>
+				<exclude>com.btoddb:trellis-common</exclude>
+			</excludes>
+            <useTransitiveFiltering>true</useTransitiveFiltering>
+
+			<useTransitiveDependencies>true</useTransitiveDependencies>
+
+			<unpack>true</unpack>
+
+			<useProjectArtifact>true</useProjectArtifact>
+
+			<outputDirectory>.</outputDirectory>
+		</dependencySet>
+	</dependencySets>
+
+	<fileSets>
+		<fileSet>
+			<directory>src/main/META-INF</directory>
+			<outputDirectory>META-INF</outputDirectory>
+		</fileSet>
+	</fileSets>
+</assembly>

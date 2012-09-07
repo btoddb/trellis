@@ -1,0 +1,990 @@
+From 8ab2da5f928712d2b99a49f5456c8064a45e5909 Mon Sep 17 00:00:00 2001
+From: "B. Todd Burruss" <btoddb@gmail.com>
+Date: Fri, 31 Aug 2012 13:35:10 -0700
+Subject: [PATCH] patch for sending mutation notifications
+
+---
+ .gitignore                                         |    4 +
+ build.xml                                          |    2 +-
+ conf/cassandra.yaml                                |    9 ++
+ src/java/org/apache/cassandra/config/Config.java   |    4 +-
+ .../cassandra/config/DatabaseDescriptor.java       |   15 +++-
+ .../cassandra/config/ExternalCacheManager.java     |   51 +++++++++
+ .../config/ExternalCacheNotificationDef.java       |   16 +++
+ src/java/org/apache/cassandra/db/ColumnFamily.java |    4 +
+ .../org/apache/cassandra/db/ColumnFamilyStore.java |   15 +++-
+ .../apache/cassandra/db/HintedHandOffManager.java  |   19 +++-
+ .../apache/cassandra/db/ReadRepairVerbHandler.java |   13 ++-
+ src/java/org/apache/cassandra/db/RowMutation.java  |   40 +++++++
+ .../cassandra/db/RowMutationVerbHandler.java       |   23 ++++-
+ src/java/org/apache/cassandra/db/Table.java        |    4 +-
+ .../apache/cassandra/db/TruncateVerbHandler.java   |    2 +
+ .../apache/cassandra/db/commitlog/CommitLog.java   |    1 +
+ .../cassandra/db/commitlog/CommitLogReplayer.java  |    4 +
+ .../apache/cassandra/db/index/keys/KeysIndex.java  |    6 +-
+ .../notify/EhcacheCacheEventListenerImpl.java      |   92 ++++++++++++++++
+ .../notify/ExternalCacheEventDetails.java          |  110 ++++++++++++++++++++
+ .../notify/ExternalCacheEventListener.java         |   13 +++
+ .../org/apache/cassandra/notify/MutationEvent.java |   44 ++++++++
+ .../cassandra/service/RowRepairResolver.java       |    1 +
+ .../org/apache/cassandra/service/StorageProxy.java |    9 ++-
+ .../cassandra/streaming/IncomingStreamReader.java  |   24 ++++-
+ test/conf/cassandra.yaml                           |    8 ++
+ 26 files changed, 512 insertions(+), 21 deletions(-)
+ create mode 100644 .gitignore
+ create mode 100644 src/java/org/apache/cassandra/config/ExternalCacheManager.java
+ create mode 100644 src/java/org/apache/cassandra/config/ExternalCacheNotificationDef.java
+ create mode 100644 src/java/org/apache/cassandra/notify/EhcacheCacheEventListenerImpl.java
+ create mode 100644 src/java/org/apache/cassandra/notify/ExternalCacheEventDetails.java
+ create mode 100644 src/java/org/apache/cassandra/notify/ExternalCacheEventListener.java
+ create mode 100644 src/java/org/apache/cassandra/notify/MutationEvent.java
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..f42bb05
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,4 @@
++/.classpath
++/.project
++/build
++/src/gen-java
+diff --git a/build.xml b/build.xml
+index 10dbecc..1a36bd2 100644
+--- a/build.xml
++++ b/build.xml
+@@ -25,7 +25,7 @@
+     <property name="debuglevel" value="source,lines,vars"/>
+ 
+     <!-- default version and SCM information -->
+-    <property name="base.version" value="1.1.4"/>
++    <property name="base.version" value="1.1.4-notify"/>
+     <property name="scm.connection" value="scm:git://git.apache.org/cassandra.git"/>
+     <property name="scm.developerConnection" value="scm:git://git.apache.org/cassandra.git"/>
+     <property name="scm.url" value="http://git-wip-us.apache.org/repos/asf?p=cassandra.git;a=tree"/>
+diff --git a/conf/cassandra.yaml b/conf/cassandra.yaml
+index c4732db..384a5c4 100644
+--- a/conf/cassandra.yaml
++++ b/conf/cassandra.yaml
+@@ -565,3 +565,12 @@ encryption_options:
+     # algorithm: SunX509
+     # store_type: JKS
+     # cipher_suites: [TLS_RSA_WITH_AES_128_CBC_SHA,TLS_RSA_WITH_AES_256_CBC_SHA]
++
++#external_cache_notification:
++#  listener_class: org.apache.cassandra.notify.EhcacheCacheEventListenerImpl
++#  notify_on_local_mutate: true
++#  notify_on_replica_mutate: true
++#  notify_on_dc_mutate: true
++#  notify_on_repairs: true
++#  notify_on_hints: true
++
+diff --git a/src/java/org/apache/cassandra/config/Config.java b/src/java/org/apache/cassandra/config/Config.java
+index f749db6..e42969b 100644
+--- a/src/java/org/apache/cassandra/config/Config.java
++++ b/src/java/org/apache/cassandra/config/Config.java
+@@ -28,7 +28,9 @@ public class Config
+     public String cluster_name = "Test Cluster";
+     public String authenticator;
+     public String authority;
+-
++    
++    public ExternalCacheNotificationDef external_cache_notification = new ExternalCacheNotificationDef(); 
++    
+     /* Hashing strategy Random or OPHF */
+     public String partitioner;
+ 
+diff --git a/src/java/org/apache/cassandra/config/DatabaseDescriptor.java b/src/java/org/apache/cassandra/config/DatabaseDescriptor.java
+index 54486d0..a58022f 100644
+--- a/src/java/org/apache/cassandra/config/DatabaseDescriptor.java
++++ b/src/java/org/apache/cassandra/config/DatabaseDescriptor.java
+@@ -84,7 +84,7 @@ public class DatabaseDescriptor
+ 
+     private static long keyCacheSizeInMB;
+     private static IRowCacheProvider rowCacheProvider;
+-
++    
+     /**
+      * Inspect the classpath to find storage configuration file
+      */
+@@ -144,6 +144,17 @@ public class DatabaseDescriptor
+             if (!System.getProperty("os.arch").contains("64"))
+                 logger.info("32bit JVM detected.  It is recommended to run Cassandra on a 64bit JVM for better performance.");
+ 
++            ExternalCacheManager.init(
++                               conf.external_cache_notification.listener_class,
++                               conf.external_cache_notification.notify_on_local_mutate,
++                               conf.external_cache_notification.notify_on_replica_mutate,
++                               conf.external_cache_notification.notify_on_dc_mutate,
++                               conf.external_cache_notification.notify_on_repairs,
++                               conf.external_cache_notification.notify_on_hints,
++                               conf.external_cache_notification.notify_on_commitlog_replay
++                               );
++
++
+             if (conf.commitlog_sync == null)
+             {
+                 throw new ConfigurationException("Missing required directive CommitLogSync");
+@@ -493,7 +504,7 @@ public class DatabaseDescriptor
+         IEndpointSnitch snitch = FBUtilities.construct(snitchClassName, "snitch");
+         return conf.dynamic_snitch ? new DynamicEndpointSnitch(snitch) : snitch;
+     }
+-
++    
+     /** load keyspace (table) definitions, but do not initialize the table instances. */
+     public static void loadSchemas() throws IOException
+     {
+diff --git a/src/java/org/apache/cassandra/config/ExternalCacheManager.java b/src/java/org/apache/cassandra/config/ExternalCacheManager.java
+new file mode 100644
+index 0000000..7aae142
+--- /dev/null
++++ b/src/java/org/apache/cassandra/config/ExternalCacheManager.java
+@@ -0,0 +1,51 @@
++
++package org.apache.cassandra.config;
++
++import org.apache.cassandra.notify.ExternalCacheEventDetails;
++import org.apache.cassandra.notify.ExternalCacheEventListener;
++import org.apache.cassandra.utils.FBUtilities;
++
++public class ExternalCacheManager
++{
++	public static ExternalCacheEventDetails externalCacheEventDetails;
++
++	public static void init(String listener_class, boolean notify_on_local_mutate,
++			boolean notify_on_replica_mutate, boolean notify_on_dc_mutate,
++			boolean notify_on_repairs, boolean notify_on_hints, boolean notify_on_commitlog_replay)
++			throws ConfigurationException
++	{
++		if ( null != externalCacheEventDetails ) {
++			return;
++		}
++		
++		init((ExternalCacheEventListener) (null != listener_class ? FBUtilities.construct(
++				listener_class, "external-cache-listener") : null), notify_on_local_mutate,
++				notify_on_replica_mutate, notify_on_dc_mutate, notify_on_repairs, notify_on_hints,
++				notify_on_commitlog_replay);
++		if (null != externalCacheEventDetails.getListener())
++		{
++			externalCacheEventDetails.getListener().start();
++		}
++
++	}
++
++	public static void init(ExternalCacheEventListener listener, boolean notify_on_local_mutate,
++			boolean notify_on_replica_mutate, boolean notify_on_dc_mutate,
++			boolean notify_on_repairs, boolean notify_on_hints, boolean notify_on_commitlog_replay)
++			throws ConfigurationException
++	{
++		if ( null != externalCacheEventDetails ) {
++			return;
++		}
++		
++		externalCacheEventDetails = new ExternalCacheEventDetails(listener, notify_on_local_mutate,
++				notify_on_replica_mutate, notify_on_dc_mutate, notify_on_repairs, notify_on_hints,
++				notify_on_commitlog_replay);
++	}
++
++	public static ExternalCacheEventDetails getExternalCacheEventDetails()
++	{
++		return externalCacheEventDetails;
++	}
++
++}
+diff --git a/src/java/org/apache/cassandra/config/ExternalCacheNotificationDef.java b/src/java/org/apache/cassandra/config/ExternalCacheNotificationDef.java
+new file mode 100644
+index 0000000..b173894
+--- /dev/null
++++ b/src/java/org/apache/cassandra/config/ExternalCacheNotificationDef.java
+@@ -0,0 +1,16 @@
++
++package org.apache.cassandra.config;
++
++
++public class ExternalCacheNotificationDef
++{
++
++	public String listener_class = null;
++	public boolean notify_on_local_mutate = false;
++	public boolean notify_on_replica_mutate = false;
++	public boolean notify_on_dc_mutate = true;
++	public boolean notify_on_repairs = true;
++	public boolean notify_on_hints = true;
++	public boolean notify_on_commitlog_replay = true;
++
++}
+diff --git a/src/java/org/apache/cassandra/db/ColumnFamily.java b/src/java/org/apache/cassandra/db/ColumnFamily.java
+index aa683ea..46e69b5 100644
+--- a/src/java/org/apache/cassandra/db/ColumnFamily.java
++++ b/src/java/org/apache/cassandra/db/ColumnFamily.java
+@@ -103,6 +103,10 @@ public class ColumnFamily extends AbstractColumnContainer implements IRowCacheEn
+         return (s instanceof SuperColumnSerializer) ? ((SuperColumnSerializer) s).getComparator() : null;
+     }
+ 
++    public String getName() {
++    	return cfm.cfName;
++    }
++    
+     public ColumnFamilyType getType()
+     {
+         return cfm.cfType;
+diff --git a/src/java/org/apache/cassandra/db/ColumnFamilyStore.java b/src/java/org/apache/cassandra/db/ColumnFamilyStore.java
+index a39530a..a82559c 100644
+--- a/src/java/org/apache/cassandra/db/ColumnFamilyStore.java
++++ b/src/java/org/apache/cassandra/db/ColumnFamilyStore.java
+@@ -63,6 +63,7 @@ import org.apache.cassandra.io.compress.CompressionParameters;
+ import org.apache.cassandra.io.sstable.*;
+ import org.apache.cassandra.io.sstable.Descriptor;
+ import org.apache.cassandra.io.util.FileUtils;
++import org.apache.cassandra.notify.MutationEvent;
+ import org.apache.cassandra.service.CacheService;
+ import org.apache.cassandra.service.StorageService;
+ import org.apache.cassandra.thrift.IndexExpression;
+@@ -143,8 +144,9 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
+     volatile double liveRatio = 1.0;
+     /** ops count last time we computed liveRatio */
+     private final AtomicLong liveRatioComputedAt = new AtomicLong(32);
++   
+ 
+-    public void reload() throws IOException
++	public void reload() throws IOException
+     {
+         // metadata object has been mutated directly. make all the members jibe with new settings.
+ 
+@@ -759,7 +761,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
+      * param @ key - key for update/insert
+      * param @ columnFamily - columnFamily changes
+      */
+-    public void apply(DecoratedKey key, ColumnFamily columnFamily)
++    public void apply(DecoratedKey key, ColumnFamily columnFamily, boolean notifyCacheEventListeners)
+     {
+         long start = System.nanoTime();
+ 
+@@ -768,6 +770,15 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
+         updateRowCache(key, columnFamily);
+         writeStats.addNano(System.nanoTime() - start);
+ 
++        if ( notifyCacheEventListeners && null != ExternalCacheManager.getExternalCacheEventDetails().getListener()) {
++        	try {
++        		ExternalCacheManager.getExternalCacheEventDetails().getListener().mutationNotification(Collections.singletonList(new MutationEvent(metadata.ksName, getColumnFamilyName(), key, columnFamily)));
++        	}
++        	catch ( Throwable e ) {
++        		logger.error( "exception while notifying external cache listener", e);
++        	}
++        }
++
+         // recompute liveRatio, if we have doubled the number of ops since last calculated
+         while (true)
+         {
+diff --git a/src/java/org/apache/cassandra/db/HintedHandOffManager.java b/src/java/org/apache/cassandra/db/HintedHandOffManager.java
+index 425ea33..3b0b558 100644
+--- a/src/java/org/apache/cassandra/db/HintedHandOffManager.java
++++ b/src/java/org/apache/cassandra/db/HintedHandOffManager.java
+@@ -19,6 +19,7 @@
+ package org.apache.cassandra.db;
+ 
+ import java.io.DataInputStream;
++import java.io.IOError;
+ import java.io.IOException;
+ import java.lang.management.ManagementFactory;
+ import java.net.InetAddress;
+@@ -48,6 +49,7 @@ import org.apache.cassandra.dht.Token;
+ import org.apache.cassandra.gms.ApplicationState;
+ import org.apache.cassandra.gms.FailureDetector;
+ import org.apache.cassandra.gms.Gossiper;
++import org.apache.cassandra.net.Message;
+ import org.apache.cassandra.net.MessagingService;
+ import org.apache.cassandra.service.*;
+ import org.apache.cassandra.thrift.*;
+@@ -58,6 +60,7 @@ import org.cliffc.high_scale_lib.NonBlockingHashSet;
+ 
+ 
+ 
++
+ /**
+  * For each endpoint for which we have hints, there is a row in the system hints CF.
+  * The key for this row is ByteBuffer.wrap(string), i.e. "127.0.0.1".
+@@ -125,7 +128,18 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
+     private static void sendMutation(InetAddress endpoint, RowMutation mutation) throws TimeoutException
+     {
+         IWriteResponseHandler responseHandler = WriteResponseHandler.create(endpoint);
+-        MessagingService.instance().sendRR(mutation, endpoint, responseHandler);
++        Message msg;
++		try
++		{
++			msg = mutation.getMessage(Gossiper.instance.getVersion(endpoint));
++		}
++        catch (IOException ex)
++        {
++            // happened during message creation.
++            throw new IOError(ex);
++        }
++        msg = msg.withHeaderAdded(RowMutation.REASON_HEADER, RowMutation.REASON_HH);
++        MessagingService.instance().sendRR(msg, endpoint, responseHandler);
+         responseHandler.get();
+ 
+         try
+@@ -311,7 +325,8 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
+         while (true)
+         {
+             QueryFilter filter = QueryFilter.getSliceFilter(epkey, new QueryPath(HINTS_CF), startColumn, ByteBufferUtil.EMPTY_BYTE_BUFFER, false, pageSize);
+-            ColumnFamily hintsPage = ColumnFamilyStore.removeDeleted(hintStore.getColumnFamily(filter), (int)(System.currentTimeMillis() / 1000));
++//            ColumnFamily hintsPage = ColumnFamilyStore.removeDeleted(hintStore.getColumnFamily(filter), (int)(System.currentTimeMillis() / 1000));
++            ColumnFamily hintsPage = hintStore.getColumnFamily(filter);
+             if (pagingFinished(hintsPage, startColumn))
+                 break;
+ 
+diff --git a/src/java/org/apache/cassandra/db/ReadRepairVerbHandler.java b/src/java/org/apache/cassandra/db/ReadRepairVerbHandler.java
+index 755c851..246a052 100644
+--- a/src/java/org/apache/cassandra/db/ReadRepairVerbHandler.java
++++ b/src/java/org/apache/cassandra/db/ReadRepairVerbHandler.java
+@@ -22,13 +22,17 @@ import java.io.DataInputStream;
+ import java.io.IOError;
+ import java.io.IOException;
+ 
++import org.apache.cassandra.config.ExternalCacheManager;
+ import org.apache.cassandra.io.util.FastByteArrayInputStream;
+ import org.apache.cassandra.net.IVerbHandler;
+ import org.apache.cassandra.net.Message;
+ import org.apache.cassandra.net.MessagingService;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
+ 
+ public class ReadRepairVerbHandler implements IVerbHandler
+ {
++    private static Logger logger_ = LoggerFactory.getLogger(ReadRepairVerbHandler.class);
+     public void doVerb(Message message, String id)
+     {
+         byte[] body = message.getMessageBody();
+@@ -37,8 +41,13 @@ public class ReadRepairVerbHandler implements IVerbHandler
+         try
+         {
+             RowMutation rm = RowMutation.serializer().deserialize(new DataInputStream(buffer), message.getVersion());
+-            rm.apply();
+-
++            if ( ExternalCacheManager.getExternalCacheEventDetails().notifyOnRepair() ) {
++            	logger_.debug( "notifying external cache on read repair");
++            	rm.notifyCacheEventListeners().apply();
++            }
++            else {
++            	rm.apply();
++            }
+             WriteResponse response = new WriteResponse(rm.getTable(), rm.key(), true);
+             Message responseMessage = WriteResponse.makeWriteResponseMessage(message, response);
+             MessagingService.instance().sendReply(responseMessage, id, message.getFrom());
+diff --git a/src/java/org/apache/cassandra/db/RowMutation.java b/src/java/org/apache/cassandra/db/RowMutation.java
+index a48e027..10b15bf 100644
+--- a/src/java/org/apache/cassandra/db/RowMutation.java
++++ b/src/java/org/apache/cassandra/db/RowMutation.java
+@@ -48,6 +48,10 @@ public class RowMutation implements IMutation, MessageProducer
+ {
+     private static RowMutationSerializer serializer_ = new RowMutationSerializer();
+     public static final String FORWARD_HEADER = "FORWARD";
++    public static final String REASON_HEADER = "REPAIR_REASON";
++    public static final byte[] REASON_HH = "HH".getBytes(); // done
++    public static final byte[] REASON_RR = "RR".getBytes();
++    public static final byte[] REASON_DC = "DC".getBytes();
+ 
+     public static RowMutationSerializer serializer()
+     {
+@@ -66,6 +70,25 @@ public class RowMutation implements IMutation, MessageProducer
+         table_ = table;
+         key_ = key;
+     }
++    
++    private boolean notifyCacheEventListeners = false;
++
++	public boolean isNotifyCacheEventListeners()
++	{
++		return notifyCacheEventListeners;
++	}
++
++	public RowMutation notifyCacheEventListeners()
++	{
++		this.notifyCacheEventListeners = true;
++		return this;
++	}
++
++	public RowMutation skipCacheEventListeners()
++	{
++		this.notifyCacheEventListeners = false;
++		return this;
++	}
+ 
+     public RowMutation(String table, Row row)
+     {
+@@ -462,4 +485,21 @@ public class RowMutation implements IMutation, MessageProducer
+             return size;
+         }
+     }
++
++	public static boolean isReasonReplicaMutation(byte[] reason)
++	{
++		return null == reason;
++	}
++	
++	public static boolean isReasonHintedHandoff(byte[] reason) {
++		return isReasonReplicaMutation(reason) ? false : Arrays.equals(REASON_HH, reason);
++	}
++	
++//	public static boolean isReasonReadRepair(byte[] reason) {
++//		return isReasonReplicaMutation(reason) ? false : Arrays.equals(REASON_RR, reason);
++//	}
++	
++	public static boolean isReasonDataCenterReplica(byte[] reason) {
++		return isReasonReplicaMutation(reason) ? false : Arrays.equals(REASON_DC, reason);
++	}
+ }
+diff --git a/src/java/org/apache/cassandra/db/RowMutationVerbHandler.java b/src/java/org/apache/cassandra/db/RowMutationVerbHandler.java
+index 2be4f9f..454f5d2 100644
+--- a/src/java/org/apache/cassandra/db/RowMutationVerbHandler.java
++++ b/src/java/org/apache/cassandra/db/RowMutationVerbHandler.java
+@@ -25,6 +25,7 @@ import java.net.InetAddress;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import org.apache.cassandra.config.ExternalCacheManager;
+ import org.apache.cassandra.io.util.FastByteArrayInputStream;
+ import org.apache.cassandra.net.CompactEndpointSerializationHelper;
+ import org.apache.cassandra.net.IVerbHandler;
+@@ -48,7 +49,27 @@ public class RowMutationVerbHandler implements IVerbHandler
+             if (forwardBytes != null && message.getVersion() >= MessagingService.VERSION_11)
+                 forwardToLocalNodes(message, forwardBytes);
+ 
+-            rm.apply();
++            byte[] mutationReason = message.getHeader(RowMutation.REASON_HEADER);
++            
++            if ( ExternalCacheManager.getExternalCacheEventDetails().notifyOnReplicaMutation() && RowMutation.isReasonReplicaMutation(mutationReason) ) {
++            	logger_.debug( "notifying external cache on replica mutate");
++            	rm.notifyCacheEventListeners().apply();
++            }
++            else if ( ExternalCacheManager.getExternalCacheEventDetails().notifyOnDcMutation() && RowMutation.isReasonDataCenterReplica(mutationReason) ) {
++            	logger_.debug( "notifying external cache on 'other' data center mutate");
++            	rm.notifyCacheEventListeners().apply();
++            }
++//            else if ( ExternalCacheManager.getExternalCacheEventDetails().notifyOnRepair() && RowMutation.isReasonReadRepair(mutationReason) ) {
++//        	logger_.debug( "notifying external cache on read repair");
++//            	rm.notifyCacheEventListeners().apply();
++//            }
++            else if ( ExternalCacheManager.getExternalCacheEventDetails().notifyOnHint() && RowMutation.isReasonHintedHandoff(mutationReason) ) {
++            	logger_.debug( "notifying external cache on hinted handoff");
++            	rm.notifyCacheEventListeners().apply();
++            }
++            else {
++            	rm.apply();
++            }
+ 
+             WriteResponse response = new WriteResponse(rm.getTable(), rm.key(), true);
+             Message responseMessage = WriteResponse.makeWriteResponseMessage(message, response);
+diff --git a/src/java/org/apache/cassandra/db/Table.java b/src/java/org/apache/cassandra/db/Table.java
+index f3a414e..7ce3a4e 100644
+--- a/src/java/org/apache/cassandra/db/Table.java
++++ b/src/java/org/apache/cassandra/db/Table.java
+@@ -439,7 +439,7 @@ public class Table
+                 // no-index case to avoid the synchronization.
+                 if (mutatedIndexedColumns == null)
+                 {
+-                    cfs.apply(key, cf);
++                    cfs.apply(key, cf, mutation.isNotifyCacheEventListeners());
+                     continue;
+                 }
+                 // else mutatedIndexedColumns != null
+@@ -453,7 +453,7 @@ public class Table
+                     logger.debug("Pre-mutation index row is {}", oldIndexedColumns);
+                     ignoreObsoleteMutations(cf, mutatedIndexedColumns, oldIndexedColumns);
+ 
+-                    cfs.apply(key, cf);
++                    cfs.apply(key, cf, mutation.isNotifyCacheEventListeners());
+ 
+                     // ignore full index memtables -- we flush those when the "master" one is full
+                     cfs.indexManager.applyIndexUpdates(mutation.key(), cf, mutatedIndexedColumns, oldIndexedColumns);
+diff --git a/src/java/org/apache/cassandra/db/TruncateVerbHandler.java b/src/java/org/apache/cassandra/db/TruncateVerbHandler.java
+index 5d32197..8c5e81c 100644
+--- a/src/java/org/apache/cassandra/db/TruncateVerbHandler.java
++++ b/src/java/org/apache/cassandra/db/TruncateVerbHandler.java
+@@ -56,6 +56,8 @@ public class TruncateVerbHandler implements IVerbHandler
+             }
+             logger.debug("Truncate operation succeeded at this host");
+ 
++        	// TODO:BTB - somewhere in here need to completely delete the external cache contents
++
+             TruncateResponse response = new TruncateResponse(t.keyspace, t.columnFamily, true);
+             Message responseMessage = TruncateResponse.makeTruncateResponseMessage(message, response);
+             logger.debug("{} applied.  Sending response to {}@{} ", new Object[]{ t, id, message.getFrom()});
+diff --git a/src/java/org/apache/cassandra/db/commitlog/CommitLog.java b/src/java/org/apache/cassandra/db/commitlog/CommitLog.java
+index 0b0aa27..f34b0e5 100644
+--- a/src/java/org/apache/cassandra/db/commitlog/CommitLog.java
++++ b/src/java/org/apache/cassandra/db/commitlog/CommitLog.java
+@@ -33,6 +33,7 @@ import org.apache.commons.lang.StringUtils;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++
+ import org.apache.cassandra.config.Config;
+ import org.apache.cassandra.config.DatabaseDescriptor;
+ 
+diff --git a/src/java/org/apache/cassandra/db/commitlog/CommitLogReplayer.java b/src/java/org/apache/cassandra/db/commitlog/CommitLogReplayer.java
+index e12e5ba..c995a23 100644
+--- a/src/java/org/apache/cassandra/db/commitlog/CommitLogReplayer.java
++++ b/src/java/org/apache/cassandra/db/commitlog/CommitLogReplayer.java
+@@ -33,6 +33,7 @@ import java.util.zip.Checksum;
+ 
+ import org.apache.cassandra.concurrent.Stage;
+ import org.apache.cassandra.concurrent.StageManager;
++import org.apache.cassandra.config.ExternalCacheManager;
+ import org.apache.cassandra.config.Schema;
+ import org.apache.cassandra.db.ColumnFamily;
+ import org.apache.cassandra.db.ColumnFamilyStore;
+@@ -253,6 +254,9 @@ private final AtomicInteger replayedCount;
+                         }
+                         if (!newRm.isEmpty())
+                         {
++                        	if ( ExternalCacheManager.getExternalCacheEventDetails().notifyOnCommitlogReplay() ) {
++                        		newRm.notifyCacheEventListeners();
++                        	}
+                             Table.open(newRm.getTable()).apply(newRm, false);
+                             tablesRecovered.add(table);
+                         }
+diff --git a/src/java/org/apache/cassandra/db/index/keys/KeysIndex.java b/src/java/org/apache/cassandra/db/index/keys/KeysIndex.java
+index 3ee782b..e9a6fe2 100644
+--- a/src/java/org/apache/cassandra/db/index/keys/KeysIndex.java
++++ b/src/java/org/apache/cassandra/db/index/keys/KeysIndex.java
+@@ -98,7 +98,7 @@ public class KeysIndex extends PerColumnSecondaryIndex
+         int localDeletionTime = (int) (System.currentTimeMillis() / 1000);
+         ColumnFamily cfi = ColumnFamily.create(indexCfs.metadata);
+         cfi.addTombstone(rowKey, localDeletionTime, column.timestamp());
+-        indexCfs.apply(valueKey, cfi);
++        indexCfs.apply(valueKey, cfi, false);
+         if (logger.isDebugEnabled())
+             logger.debug("removed index entry for cleaned-up value {}:{}", valueKey, cfi);
+     }
+@@ -117,8 +117,8 @@ public class KeysIndex extends PerColumnSecondaryIndex
+         }
+         if (logger.isDebugEnabled())
+             logger.debug("applying index row {} in {}", indexCfs.metadata.getKeyValidator().getString(valueKey.key), cfi);
+-
+-        indexCfs.apply(valueKey, cfi);
++        
++        indexCfs.apply(valueKey, cfi, false);
+     }
+ 
+     public void updateColumn(DecoratedKey<?> valueKey, ByteBuffer rowKey, IColumn col)
+diff --git a/src/java/org/apache/cassandra/notify/EhcacheCacheEventListenerImpl.java b/src/java/org/apache/cassandra/notify/EhcacheCacheEventListenerImpl.java
+new file mode 100644
+index 0000000..5f94f2b
+--- /dev/null
++++ b/src/java/org/apache/cassandra/notify/EhcacheCacheEventListenerImpl.java
+@@ -0,0 +1,92 @@
++
++package org.apache.cassandra.notify;
++
++import java.nio.ByteBuffer;
++import java.util.List;
++
++import org.apache.cassandra.db.IColumn;
++import org.apache.commons.httpclient.HttpClient;
++import org.apache.commons.httpclient.MultiThreadedHttpConnectionManager;
++import org.apache.commons.httpclient.methods.PutMethod;
++import org.apache.commons.httpclient.methods.StringRequestEntity;
++import org.apache.commons.httpclient.params.HttpConnectionManagerParams;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++public class EhcacheCacheEventListenerImpl implements ExternalCacheEventListener
++{
++	private static Logger logger = LoggerFactory.getLogger(EhcacheCacheEventListenerImpl.class);
++	private HttpClient httpClient;
++
++	private String host = "localhost";
++	private int port = 8080;
++	private String path = "/ehcache/rest/";
++
++//	public EhcacheCacheEventListenerImpl()
++//	{
++//		restSetup();
++//	}
++
++	@Override
++	public void start()
++	{
++		MultiThreadedHttpConnectionManager connMgr = new MultiThreadedHttpConnectionManager();
++		HttpConnectionManagerParams connMgrParms = new HttpConnectionManagerParams();
++		connMgrParms.setDefaultMaxConnectionsPerHost(10);
++		connMgrParms.setMaxTotalConnections(50);
++		connMgrParms.setTcpNoDelay(true);
++		connMgr.setParams(connMgrParms);
++		httpClient = new HttpClient(connMgr);
++	}
++
++	@Override
++	public void mutationNotification(List<MutationEvent> eventList)
++	{
++		if (null == eventList || eventList.isEmpty())
++		{
++			return;
++		}
++
++		for (MutationEvent event : eventList)
++		{
++			String cfName = event.getColumnFamily().getName();
++			String key = new String( event.getKey().key.array());
++			String restCallBase = "http://" + host + ":" + port + path + cfName
++					+ "/";
++			for (IColumn col : event.getColumnFamily())
++			{
++				String colName = new String(col.name().array());
++				String colVal = new String(col.value().array());
++				String restCall = restCallBase +key+":"+colName;
++				
++				logger.debug("Mutation : colFam="+cfName + ", key=" + key + ", colName="+colName + ", colVal="+colVal);
++				PutMethod put = new PutMethod(restCall);
++				put.setRequestEntity(new StringRequestEntity(colVal));
++				try
++				{
++					httpClient.executeMethod(put);
++				}
++				catch (Throwable e)
++				{
++					logger.error("exception while ehcache'ing the data", e);
++				}
++			}
++		}
++	}
++
++	private String keyToStr(ByteBuffer key)
++	{
++		ByteBuffer bb = key.duplicate();
++		StringBuffer sb = new StringBuffer();
++		while (bb.hasRemaining())
++		{
++			sb.append((char) bb.get());
++		}
++		return sb.toString();
++	}
++	
++	@Override
++	public void shutdown() {
++		
++	}
++}
+diff --git a/src/java/org/apache/cassandra/notify/ExternalCacheEventDetails.java b/src/java/org/apache/cassandra/notify/ExternalCacheEventDetails.java
+new file mode 100644
+index 0000000..c3605be
+--- /dev/null
++++ b/src/java/org/apache/cassandra/notify/ExternalCacheEventDetails.java
+@@ -0,0 +1,110 @@
++package org.apache.cassandra.notify;
++
++public class ExternalCacheEventDetails
++{
++	private ExternalCacheEventListener listener;
++	private boolean notifyOnLocalMutation = false;
++	private boolean notifyOnReplicaMutation = false;
++	private boolean notifyOnDcMutation = true;
++	private boolean notifyOnRepair = true;
++	private boolean notifyOnHint = true;
++	private boolean notifyOnCommitlogReplay = true;
++	
++	public ExternalCacheEventDetails(ExternalCacheEventListener listener, boolean notifyOnLocal,
++			boolean notifyOnReplica, boolean notifyOnDc, boolean notifyOnRepair, boolean notifyOnHint, boolean notifyOnCommitlogReplay)
++	{
++		this.listener = listener;
++		this.notifyOnLocalMutation = notifyOnLocal;
++		this.notifyOnReplicaMutation = notifyOnReplica;
++		this.notifyOnDcMutation = notifyOnDc;
++		this.notifyOnRepair = notifyOnRepair;
++		this.notifyOnHint = notifyOnHint;
++		this.notifyOnCommitlogReplay = notifyOnCommitlogReplay;
++	}
++
++	public ExternalCacheEventListener getListener()
++	{
++		return listener;
++	}
++
++	public void setListener(ExternalCacheEventListener listener)
++	{
++		this.listener = listener;
++	}
++
++	public void setNotifyOnLocalMutation(boolean notifyOnLocal)
++	{
++		this.notifyOnLocalMutation = notifyOnLocal;
++	}
++
++	public void setNotifyOnReplicaMutation(boolean notifyOnReplicaMutation)
++	{
++		this.notifyOnReplicaMutation = notifyOnReplicaMutation;
++	}
++
++	public void setNotifyOnDcMutation(boolean notifyOnDcMutation)
++	{
++		this.notifyOnDcMutation = notifyOnDcMutation;
++	}
++
++	/**
++	 * Considers if a listener is set in addition to the state of 'local notify'
++	 * 
++	 * @return
++	 */
++	public boolean notifyOnLocalMutation()
++	{
++		return notifyOnLocalMutation && null != listener; 
++	}
++
++	/**
++	 * Considers if a listener is set in addition to the state of 'replica notify'
++	 * 
++	 * @return
++	 */
++	public boolean notifyOnReplicaMutation()
++	{
++		return notifyOnReplicaMutation && null != listener; 
++	}
++
++	/**
++	 * Considers if a listener is set in addition to the state of 'DC notify'
++	 * 
++	 * @return
++	 */
++	public boolean notifyOnDcMutation()
++	{
++		return notifyOnDcMutation && null != listener; 
++	}
++
++	/**
++	 * Considers if a listener is set in addition to the state of 'repair notify'
++	 * 
++	 * @return
++	 */
++	public boolean notifyOnRepair()
++	{
++		return notifyOnRepair && null != listener;
++	}
++
++	/**
++	 * Considers if a listener is set in addition to the state of 'hint notify'
++	 * 
++	 * @return
++	 */
++	public boolean notifyOnHint()
++	{
++		return notifyOnHint && null != listener;
++	}
++
++	/**
++	 * Considers if a listener is set in addition to the state of 'commitlog replay notify'
++	 * 
++	 * @return
++	 */
++	public boolean notifyOnCommitlogReplay()
++	{
++		return notifyOnCommitlogReplay && null != listener;
++	}
++	
++}
+diff --git a/src/java/org/apache/cassandra/notify/ExternalCacheEventListener.java b/src/java/org/apache/cassandra/notify/ExternalCacheEventListener.java
+new file mode 100644
+index 0000000..875c3d5
+--- /dev/null
++++ b/src/java/org/apache/cassandra/notify/ExternalCacheEventListener.java
+@@ -0,0 +1,13 @@
++package org.apache.cassandra.notify;
++
++import java.util.List;
++
++
++public interface ExternalCacheEventListener
++{
++
++	void mutationNotification(List<MutationEvent> eventList);
++	
++	void start();
++	void shutdown();
++}
+diff --git a/src/java/org/apache/cassandra/notify/MutationEvent.java b/src/java/org/apache/cassandra/notify/MutationEvent.java
+new file mode 100644
+index 0000000..034e087
+--- /dev/null
++++ b/src/java/org/apache/cassandra/notify/MutationEvent.java
+@@ -0,0 +1,44 @@
++
++package org.apache.cassandra.notify;
++
++import org.apache.cassandra.db.ColumnFamily;
++import org.apache.cassandra.db.DecoratedKey;
++
++public class MutationEvent
++{
++	private final String keyspaceName;
++	private final String columnFamilyName;
++	@SuppressWarnings("rawtypes")
++	private final DecoratedKey key;
++	private final ColumnFamily columnFamily;
++	
++	public MutationEvent(String keyspaceName, String columnFamilyName, @SuppressWarnings("rawtypes") DecoratedKey key, ColumnFamily columnFamily)
++	{
++		this.keyspaceName = keyspaceName;
++		this.columnFamilyName = columnFamilyName;
++		this.key = key;
++		this.columnFamily = columnFamily;
++	}
++
++	@SuppressWarnings("rawtypes")
++	public DecoratedKey getKey()
++	{
++		return key;
++	}
++
++	public ColumnFamily getColumnFamily()
++	{
++		return columnFamily;
++	}
++
++	public String getKeyspaceName()
++	{
++		return keyspaceName;
++	}
++
++	public String getColumnFamilyName()
++	{
++		return columnFamilyName;
++	}
++
++}
+diff --git a/src/java/org/apache/cassandra/service/RowRepairResolver.java b/src/java/org/apache/cassandra/service/RowRepairResolver.java
+index 2d8078b..47c26d5 100644
+--- a/src/java/org/apache/cassandra/service/RowRepairResolver.java
++++ b/src/java/org/apache/cassandra/service/RowRepairResolver.java
+@@ -133,6 +133,7 @@ public class RowRepairResolver extends AbstractRowResolver
+             {
+                 throw new IOError(e);
+             }
++            repairMessage = repairMessage.withHeaderAdded(RowMutation.REASON_HEADER, RowMutation.REASON_RR);
+             results.add(MessagingService.instance().sendRR(repairMessage, endpoints.get(i)));
+         }
+ 
+diff --git a/src/java/org/apache/cassandra/service/StorageProxy.java b/src/java/org/apache/cassandra/service/StorageProxy.java
+index 566a3b4..9012589 100644
+--- a/src/java/org/apache/cassandra/service/StorageProxy.java
++++ b/src/java/org/apache/cassandra/service/StorageProxy.java
+@@ -43,6 +43,7 @@ import org.slf4j.LoggerFactory;
+ import org.apache.cassandra.concurrent.Stage;
+ import org.apache.cassandra.concurrent.StageManager;
+ import org.apache.cassandra.config.DatabaseDescriptor;
++import org.apache.cassandra.config.ExternalCacheManager;
+ import org.apache.cassandra.config.Schema;
+ import org.apache.cassandra.db.*;
+ import org.apache.cassandra.dht.AbstractBounds;
+@@ -434,6 +435,7 @@ public class StorageProxy implements StorageProxyMBean
+                         logger.debug("Adding FWD message to: " + destination + " with ID " + id);
+                 }
+                 message = message.withHeaderAdded(RowMutation.FORWARD_HEADER, bos.toByteArray());
++                message = message.withHeaderAdded(RowMutation.REASON_HEADER, RowMutation.REASON_DC);
+                 // send the combined message + forward headers
+                 String id = MessagingService.instance().sendRR(message, target, handler);
+                 if (logger.isDebugEnabled())
+@@ -450,8 +452,13 @@ public class StorageProxy implements StorageProxyMBean
+         {
+             public void runMayThrow() throws IOException
+             {
+-                rm.apply();
+                 responseHandler.response(null);
++                if ( ExternalCacheManager.getExternalCacheEventDetails().notifyOnLocalMutation() ) {
++                	rm.notifyCacheEventListeners().apply();
++                }
++                else {
++                	rm.apply();
++                }
+             }
+         };
+         StageManager.getStage(Stage.MUTATION).execute(runnable);
+diff --git a/src/java/org/apache/cassandra/streaming/IncomingStreamReader.java b/src/java/org/apache/cassandra/streaming/IncomingStreamReader.java
+index 915d3bc..84f774c 100644
+--- a/src/java/org/apache/cassandra/streaming/IncomingStreamReader.java
++++ b/src/java/org/apache/cassandra/streaming/IncomingStreamReader.java
+@@ -25,6 +25,7 @@ import java.net.Socket;
+ import java.util.Collections;
+ 
+ import org.apache.cassandra.config.DatabaseDescriptor;
++import org.apache.cassandra.config.ExternalCacheManager;
+ import org.apache.cassandra.db.ColumnFamily;
+ import org.apache.cassandra.db.ColumnFamilyStore;
+ import org.apache.cassandra.db.DecoratedKey;
+@@ -34,17 +35,18 @@ import org.apache.cassandra.db.compaction.PrecompactedRow;
+ import org.apache.cassandra.io.IColumnSerializer;
+ import org.apache.cassandra.io.sstable.*;
+ import org.apache.cassandra.io.util.FileUtils;
++import org.apache.cassandra.notify.ExternalCacheEventListener;
++import org.apache.cassandra.notify.MutationEvent;
+ import org.apache.cassandra.service.StorageService;
+ import org.apache.cassandra.utils.ByteBufferUtil;
+ import org.apache.cassandra.utils.BytesReadTracker;
+ import org.apache.cassandra.utils.FBUtilities;
+ import org.apache.cassandra.utils.Pair;
+-
+-import com.ning.compress.lzf.LZFInputStream;
+-
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.ning.compress.lzf.LZFInputStream;
++
+ public class IncomingStreamReader
+ {
+     private static final Logger logger = LoggerFactory.getLogger(IncomingStreamReader.class);
+@@ -118,13 +120,16 @@ public class IncomingStreamReader
+             {
+                 long length = section.right - section.left;
+                 long bytesRead = 0;
++                boolean notifyExternalCache = ExternalCacheManager.getExternalCacheEventDetails().notifyOnRepair();
++                ExternalCacheEventListener externalCacheListener = ExternalCacheManager.getExternalCacheEventDetails().getListener();
+                 while (bytesRead < length)
+                 {
+                     in.reset(0);
+                     key = SSTableReader.decodeKey(StorageService.getPartitioner(), localFile.desc, ByteBufferUtil.readWithShortLength(in));
+                     long dataSize = SSTableReader.readRowSize(in, localFile.desc);
+ 
+-                    if (cfs.containsCachedRow(key) && remoteFile.type == OperationType.AES && dataSize <= DatabaseDescriptor.getInMemoryCompactionLimit())
++                    boolean updateCache = cfs.containsCachedRow(key) && remoteFile.type == OperationType.AES && dataSize <= DatabaseDescriptor.getInMemoryCompactionLimit();
++                    if (notifyExternalCache || updateCache)
+                     {
+                         // need to update row cache
+                         // Note: Because we won't just echo the columns, there is no need to use the PRESERVE_SIZE flag, contrarily to what appendFromStream does below
+@@ -139,6 +144,17 @@ public class IncomingStreamReader
+                         // update cache
+                         ColumnFamily cf = row.getFullColumnFamily();
+                         cfs.updateRowCache(key, cf);
++                        if ( updateCache) {
++                        	cfs.updateRowCache(key, cf);
++                        }
++                        if ( notifyExternalCache ) {
++                        	try {
++                        		externalCacheListener.mutationNotification(Collections.singletonList(new MutationEvent(localFile.desc.ksname, cfs.getColumnFamilyName(), key, cf)));
++                        	}
++                        	catch ( Throwable e ) {
++                        		logger.error( "exception while notifying external cache listener", e);
++                        	}
++                        }
+                     }
+                     else
+                     {
+diff --git a/test/conf/cassandra.yaml b/test/conf/cassandra.yaml
+index 3578493..b84a7fe 100644
+--- a/test/conf/cassandra.yaml
++++ b/test/conf/cassandra.yaml
+@@ -34,3 +34,11 @@ encryption_options:
+ incremental_backups: true
+ flush_largest_memtables_at: 1.0
+ compaction_throughput_mb_per_sec: 0
++
++external_cache_notification:
++  listener_class: org.apache.cassandra.notify.EhcacheCacheEventListenerImpl
++  notify_on_local_mutate: true
++  notify_on_replica_mutate: true
++  notify_on_dc_mutate: true
++  notify_on_repairs: true
++  notify_on_hints: true
+-- 
+1.7.5.4
+

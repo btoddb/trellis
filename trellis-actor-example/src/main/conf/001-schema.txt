@@ -1,0 +1,12 @@
+drop keyspace TrellisTest;
+create keyspace TrellisTest with
+   strategy_options = {PHX:3}
+;
+use TrellisTest;
+
+create column family Median with
+   comparator = IntegerType
+   and gc_grace = 86400
+;
+
+quit;

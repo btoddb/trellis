@@ -1,0 +1,74 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>com.btoddb</groupId>
+		<artifactId>trellis-parent</artifactId>
+		<version>0.1.5-SNAPSHOT</version>
+	</parent>
+
+	<artifactId>trellis-actor-example</artifactId>
+	<packaging>jar</packaging>
+	<name>trellis-actor-example</name>
+	<description>Trellis Actor Example</description>
+
+	<profiles>
+		<profile>
+			<id>assemble-artifacts</id>
+			<build>
+				<plugins>
+					<plugin>
+						<artifactId>maven-assembly-plugin</artifactId>
+
+						<configuration>
+							<descriptors>
+                                <descriptor>src/main/assembly/actor-assembly.xml</descriptor>
+                                <descriptor>src/main/assembly/testapp-assembly.xml</descriptor>
+							</descriptors>
+						</configuration>
+
+						<executions>
+							<execution>
+								<id>create-artifacts</id>
+								<phase>package</phase>
+								<goals>
+									<goal>single</goal>
+								</goals>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
+
+	<dependencies>
+        <dependency>
+            <groupId>com.btoddb</groupId>
+            <artifactId>trellis-actor</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        
+        <dependency>
+            <groupId>com.btoddb</groupId>
+            <artifactId>trellis-client</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        
+        <dependency>
+            <groupId>me.prettyprint</groupId>
+            <artifactId>hector-core</artifactId>
+            <version>1.0-5</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.cassandra</groupId>
+                    <artifactId>cassandra-all</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.cassandra</groupId>
+                    <artifactId>cassandra-thrift</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+	</dependencies>
+</project>

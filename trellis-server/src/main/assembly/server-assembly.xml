@@ -1,0 +1,35 @@
+<assembly>
+  <id>server</id>
+  <formats>
+    <format>tar.gz</format>
+  </formats>
+
+  <includeBaseDirectory>false</includeBaseDirectory>
+    
+  <dependencySets>
+    <dependencySet>
+      <scope>runtime</scope>
+      <excludes>
+        <exclude>org.apache.cassandra:cassandra-all</exclude>
+        <exclude>org.apache.cassandra:cassandra-thrift</exclude>
+        <exclude>org.apache.thrift:libthrift</exclude>
+      </excludes>
+      <useTransitiveFiltering>true</useTransitiveFiltering>
+
+      <useTransitiveDependencies>true</useTransitiveDependencies>
+
+      <unpack>false</unpack>
+
+      <useProjectArtifact>true</useProjectArtifact>
+
+      <outputDirectory>libs</outputDirectory>
+    </dependencySet>
+  </dependencySets>
+ 
+  <fileSets>
+    <fileSet>
+      <directory>dir-overlay</directory>
+      <outputDirectory>.</outputDirectory>
+    </fileSet>
+  </fileSets>
+</assembly>

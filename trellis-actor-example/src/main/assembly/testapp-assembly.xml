@@ -1,0 +1,22 @@
+<assembly>
+	<id>testapp</id>
+	<formats>
+		<format>tar.gz</format>
+	</formats>
+
+	<includeBaseDirectory>false</includeBaseDirectory>
+
+	<dependencySets>
+		<dependencySet>
+			<scope>runtime</scope>
+			
+			<useTransitiveDependencies>true</useTransitiveDependencies>
+
+			<unpack>false</unpack>
+
+			<useProjectArtifact>true</useProjectArtifact>
+
+			<outputDirectory>lib</outputDirectory>
+		</dependencySet>
+	</dependencySets>
+</assembly>
